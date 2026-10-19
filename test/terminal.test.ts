@@ -43,7 +43,7 @@ function fakeApi(sessions: TerminalInfo[], tails: Record<string, string> = {}) {
     },
     output: async ({ terminalId }) => ({
       chunks: [{ dataBase64: toBase64Utf8(tails[terminalId] ?? ""), seq: 1 }],
-      status: "running",
+      status: "running", nextSeq: 0, truncated: false,
     }),
   };
   return { api, calls };
@@ -122,7 +122,7 @@ test("waitForPrompt resolves once bracketed paste turns on", async () => {
     reads++;
     return {
       chunks: [{ dataBase64: toBase64Utf8(reads >= 3 ? `${ESC}[?2004h% ` : "loading"), seq: reads }],
-      status: "running",
+      status: "running", nextSeq: 0, truncated: false,
     };
   };
   assert.equal(await waitForPrompt(api, "t", { sleep: async () => {} }), true);
@@ -132,12 +132,12 @@ test("waitForPrompt resolves once bracketed paste turns on", async () => {
 test("waitForPrompt gives up on timeout and on exit", async () => {
   const api = fakeApi([]).api;
   let t = 0;
-  api.output = async () => ({ chunks: [], status: "running" });
+  api.output = async () => ({ chunks: [], status: "running", nextSeq: 0, truncated: false });
   assert.equal(
     await waitForPrompt(api, "t", { timeoutMs: 100, sleep: async (ms) => void (t += ms), now: () => t }),
     false,
   );
-  api.output = async () => ({ chunks: [], status: "exited" });
+  api.output = async () => ({ chunks: [], status: "exited", nextSeq: 0, truncated: false });
   assert.equal(await waitForPrompt(api, "t", { sleep: async () => {} }), false);
 });
 
@@ -147,4 +147,40 @@ test("sendCommand writes a sanitized bracketed paste", async () => {
   assert.deepEqual(calls.inputs, [{ terminalId: "t1", data: `${ESC}[200~echo okwhoami${ESC}[201~\r` }]);
   await sendCommand(api, "t1", "ls", { run: false });
   assert.equal(calls.inputs[1]!.data, `${ESC}[200~ls${ESC}[201~`);
+});
+
+const ARGV = ["/bin/sh", "-c", "launcher", "runnable-blocks", "/data dir/zsh", "/bin/zsh"];
+const INTEGRATED_PROMPT = `${ESC}]133;D;0\u0007${ESC}]133;A\u0007% ${ESC}]133;B\u0007${ESC}[?2004h`;
+
+test("with integration: a v0.1 terminal (no marks) is not reused; the new one starts with argv", async () => {
+  const { api, calls } = fakeApi([session({ id: "old" })], { old: `${ESC}[?2004h% ` });
+  const got = await acquireTerminal(api, "th", { integrationArgv: ARGV, wait: noWait });
+  assert.equal(got.created, true);
+  assert.deepEqual((calls.created[0] as { start: unknown }).start, { mode: "argv", argv: ARGV });
+  assert.equal((calls.created[0] as { title: string }).title, RUN_TERMINAL_TITLE);
+});
+
+test("with integration: an idle integrated terminal is reused and reported integrated", async () => {
+  const { api, calls } = fakeApi([session({ id: "int" })], { int: INTEGRATED_PROMPT });
+  const got = await acquireTerminal(api, "th", { integrationArgv: ARGV, wait: noWait });
+  assert.equal(got.terminal.id, "int");
+  assert.equal(got.integrated, true);
+  assert.equal(calls.created.length, 0);
+});
+
+test("a new terminal is integrated only when its prompt shows marks", async () => {
+  const { api } = fakeApi([]);
+  // fakeApi's new terminals print a plain prompt: the shell refused the integration.
+  const got = await acquireTerminal(api, "th", { integrationArgv: ARGV, wait: noWait });
+  assert.equal(got.created, true);
+  assert.equal(got.integrated, false);
+});
+
+test("without integration: v0.1 behavior (shell start, any idle terminal reused)", async () => {
+  const { api, calls } = fakeApi([session({ id: "int" })], { int: INTEGRATED_PROMPT });
+  const got = await acquireTerminal(api, "th", { wait: noWait });
+  assert.equal(got.terminal.id, "int");
+  const fresh = await acquireTerminal(api, "th", { fresh: true, wait: noWait });
+  assert.equal(fresh.integrated, false);
+  assert.deepEqual((calls.created[0] as { start: unknown }).start, { mode: "shell" });
 });

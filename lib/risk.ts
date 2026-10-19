@@ -135,7 +135,17 @@ const PATTERNS: Array<{ id: string; label: string; test: (command: string) => bo
   },
 ];
 
-/** Every risky pattern the command matches, in a stable order. */
-export function findRisks(command: string): Risk[] {
-  return PATTERNS.filter((pattern) => pattern.test(command)).map(({ id, label }) => ({ id, label }));
+/**
+ * Every risky pattern the command matches, in a stable order: the built-in
+ * ones, then the user's own patterns from the settings.
+ */
+export function findRisks(command: string, extra: readonly RegExp[] = []): Risk[] {
+  const risks = PATTERNS.filter((pattern) => pattern.test(command)).map(({ id, label }) => ({ id, label }));
+  extra.forEach((pattern, index) => {
+    // A fresh copy so a /g or /y flag's lastIndex can't make matches flaky.
+    if (new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, "")).test(command)) {
+      risks.push({ id: `custom-${index}`, label: `Matches your risky pattern /${pattern.source}/` });
+    }
+  });
+  return risks;
 }

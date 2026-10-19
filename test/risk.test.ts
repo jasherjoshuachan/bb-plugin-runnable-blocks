@@ -126,3 +126,21 @@ test("everyday commands are not flagged", () => {
 test("several risks are all reported", () => {
   assert.deepEqual(ids(`sudo rm -rf /opt/app && ${PUSH} --force`), ["rm-rf", "sudo", "git-force-push"]);
 });
+
+test("extra risky patterns from the settings", () => {
+  const find = findRisks;
+  const extra = [/terraform\s+destroy/, /^npm publish/g];
+  assert.deepEqual(
+    find("terraform destroy -auto-approve", extra).map((r) => r.id),
+    ["custom-0"],
+  );
+  // A /g pattern matches every time (no lastIndex carry-over).
+  assert.equal(find("npm publish", extra).length, 1);
+  assert.equal(find("npm publish", extra).length, 1);
+  assert.match(find("npm publish", extra)[0]!.label, /\/\^npm publish\//);
+  assert.deepEqual(
+    find("sudo terraform destroy", extra).map((r) => r.id),
+    ["sudo", "custom-0"],
+  );
+  assert.deepEqual(find("ls", extra), []);
+});
