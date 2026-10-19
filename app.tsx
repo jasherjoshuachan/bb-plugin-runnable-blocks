@@ -58,8 +58,10 @@ import {
   browserStore,
   getAskEveryRun,
   hasRan,
+  isKnownIntegrated,
   isThreadConfirmed,
   markRan,
+  rememberIntegrated,
   setAskEveryRun,
   setThreadConfirmed,
 } from "./lib/state.ts";
@@ -172,7 +174,10 @@ async function describeTarget(
   let reused = false;
   if (!fresh) {
     try {
-      const found = await findReusableTerminal(api, threadId, { requireIntegration });
+      const found = await findReusableTerminal(api, threadId, {
+        requireIntegration,
+        knownIntegrated: (id) => isKnownIntegrated(browserStore(), id),
+      });
       if (found !== null) {
         cwd = found.terminal.initialCwd;
         hostId = found.terminal.hostId;
@@ -471,6 +476,8 @@ function RunnableBlock({ code, language, status, index, message, Original }: Exp
   const [ran, setRan] = useState(() => hasRan(browserStore(), key));
   const [run, setRun] = useState<RunRecord | null>(() => getRun(browserStore(), key));
   const [busy, setBusy] = useState(false);
+  /** A Run is waiting for its terminal's shell to start. */
+  const [starting, setStarting] = useState(false);
   const [pending, setPending] = useState<PendingConfirm | null>(null);
   const watchRef = useRef<AbortController | null>(null);
 
@@ -538,10 +545,16 @@ function RunnableBlock({ code, language, status, index, message, Original }: Exp
     async (action: Action) => {
       if (terminals === null) return;
       setBusy(true);
+      setStarting(action !== "insert");
       try {
         const fresh = action === "run-new" || (action === "run" && settings.terminalMode === "new");
         const integrationArgv = await integrationArgvFor(sdk, rpc, threadId, settings.shellIntegration);
-        const { terminal, integrated } = await acquireTerminal(terminals, threadId, { fresh, integrationArgv });
+        const { terminal, integrated } = await acquireTerminal(terminals, threadId, {
+          fresh,
+          integrationArgv,
+          knownIntegrated: (id) => isKnownIntegrated(browserStore(), id),
+          rememberIntegrated: (id) => rememberIntegrated(browserStore(), id),
+        });
         const shown = await reveal(terminal.id);
         const runs = action !== "insert";
         // Read the output position before sending, so the watch sees only this run.
@@ -554,6 +567,7 @@ function RunnableBlock({ code, language, status, index, message, Original }: Exp
           }
         }
         await sendCommand(terminals, terminal.id, parsed.command, { run: runs });
+        setStarting(false);
         if (runs) {
           markRan(browserStore(), key);
           setRan(true);
@@ -575,6 +589,7 @@ function RunnableBlock({ code, language, status, index, message, Original }: Exp
         });
       } finally {
         setBusy(false);
+        setStarting(false);
       }
     },
     [terminals, reveal, threadId, parsed.command, key, sdk, rpc, settings.terminalMode, settings.shellIntegration, follow],
@@ -672,7 +687,17 @@ function RunnableBlock({ code, language, status, index, message, Original }: Exp
           </span>
         ) : null}
       </div>
-      {run !== null ? (
+      {starting ? (
+        <div className="-mt-1 mb-2 text-xs">
+          <span
+            role="status"
+            className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 font-mono text-[11px] text-muted-foreground"
+          >
+            <Icon name="Loader2" fallback="Loader" className="size-3 animate-spin" aria-hidden />
+            Starting terminal…
+          </span>
+        </div>
+      ) : run !== null ? (
         <RunStatus
           run={run}
           showPreview={settings.showOutputPreview}

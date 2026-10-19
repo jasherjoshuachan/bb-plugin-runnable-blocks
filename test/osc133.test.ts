@@ -166,3 +166,20 @@ test("paste mode: run between ?2004l and ?2004h, no exit code", () => {
   other.feed(`${C}x\n${D(0)}`);
   assert.equal(other.runs.length, 0);
 });
+
+test("auto mode: paste rules until the first OSC 133 mark, then marks only", () => {
+  const plain = new Osc133Parser({ mode: "auto" });
+  plain.feed(`${ESC}[?2004l\r\nhi\r\n${ESC}[?2004h`);
+  assert.deepEqual(plain.runs, [{ exitCode: null, preview: "hi" }]);
+  assert.equal(plain.hasMarks, false);
+
+  const marked = new Osc133Parser({ mode: "auto" });
+  marked.feed(`${A}% ${B}${ESC}[?2004hls${ESC}[?2004l\r\n${C}x\r\n${D(4)}${A}${ESC}[?2004h`);
+  assert.deepEqual(marked.runs, [{ exitCode: 4, preview: "x" }]);
+  assert.equal(marked.hasMarks, true);
+
+  // A paste-rule run that started before the first mark is replaced by the C..D run.
+  const late = new Osc133Parser({ mode: "auto" });
+  late.feed(`${ESC}[?2004l\r\n${C}y\r\n${D(0)}`);
+  assert.deepEqual(late.runs, [{ exitCode: 0, preview: "y" }]);
+});

@@ -92,6 +92,7 @@ Multi-line and risky commands always ask, whatever these say. The per-thread mem
 ## Limitations
 
 - Exit status needs zsh or bash on the bb server's own machine. fish, other shells and remote hosts get the output preview without an exit code.
+- The first Run in a thread can take a few seconds longer than opening a plain terminal. bb starts an argv terminal through a login shell (`$SHELL -lc`), so your login files (`.zprofile`, `.zlogin`, `.bash_profile`) run before the integrated shell starts. The block shows **Starting terminal…** and waits up to 30 seconds for the prompt before sending, so nothing is typed into your startup files. Later Runs reuse the terminal.
 - A multi-line block runs as one command line, so it reports one exit code: the last command's.
 - If your `.zshrc` replaces the shell (`exec tmux`, `exec fish`), the hooks never load and runs show **Finished** without a code.
 - Prompt themes that rebuild `PS1` after every hook may drop the prompt-end (B) marker. The plugin doesn't need it; the exit code comes from the C and D markers.

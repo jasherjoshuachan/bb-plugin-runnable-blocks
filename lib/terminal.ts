@@ -85,14 +85,24 @@ export function hasIntegrationMarks(output: string): boolean {
   return output.includes(OSC_133);
 }
 
+/** Longest wait for a new integrated shell's first prompt (login startup files can be slow). */
+export const INTEGRATED_PROMPT_TIMEOUT_MS = 30_000;
+
 export interface ReuseOptions {
   /** Only reuse terminals with shell integration (v0.1 terminals are skipped). */
   requireIntegration?: boolean;
+  /**
+   * Terminals this plugin started with integration. One that is still
+   * loading its startup files has printed no marks yet but is integrated.
+   */
+  knownIntegrated?: (terminalId: string) => boolean;
 }
 
 export interface ReusableTerminal {
   terminal: TerminalInfo;
   integrated: boolean;
+  /** Its shell showed a prompt (bracketed paste on). False while it is still starting. */
+  ready: boolean;
 }
 
 /**
@@ -103,7 +113,7 @@ export interface ReusableTerminal {
 export async function findReusableTerminal(
   api: TerminalsApi,
   threadId: string,
-  { requireIntegration = false }: ReuseOptions = {},
+  { requireIntegration = false, knownIntegrated = () => false }: ReuseOptions = {},
 ): Promise<ReusableTerminal | null> {
   const { sessions } = await api.list({ scope: { kind: "thread", threadId } });
   for (const session of reuseCandidates(sessions, threadId)) {
@@ -117,8 +127,9 @@ export async function findReusableTerminal(
       // Output unavailable: fall back to v0.1's "reuse when running".
     }
     if (mode === "off") continue;
+    integrated ||= knownIntegrated(session.id);
     if (requireIntegration && !integrated) continue;
-    return { terminal: session, integrated };
+    return { terminal: session, integrated, ready: mode === "on" };
   }
   return null;
 }
@@ -159,7 +170,8 @@ export async function waitForPrompt(
   terminalId: string,
   { timeoutMs = 4000, intervalMs = 150, sleep = defaultSleep, now = Date.now } = {},
 ): Promise<boolean> {
-  const deadline = now() + timeoutMs;
+  const started = now();
+  const deadline = started + timeoutMs;
   for (;;) {
     try {
       const tail = await readTail(api, terminalId);
@@ -169,7 +181,8 @@ export async function waitForPrompt(
       // Not readable yet.
     }
     if (now() >= deadline) return false;
-    await sleep(intervalMs);
+    // Slower polling once a startup is clearly taking a while.
+    await sleep(now() - started > 3000 ? Math.max(intervalMs, 400) : intervalMs);
   }
 }
 
@@ -189,30 +202,43 @@ export interface AcquireOptions {
    */
   integrationArgv?: readonly string[] | null;
   wait?: typeof waitForPrompt;
+  knownIntegrated?: (terminalId: string) => boolean;
+  /** Called with the id of every terminal created with the integration argv. */
+  rememberIntegrated?: (terminalId: string) => void;
 }
 
 /** The thread's reusable "Run blocks" terminal, or a new one (always new when `fresh`). */
 export async function acquireTerminal(
   api: TerminalsApi,
   threadId: string,
-  { fresh = false, integrationArgv = null, wait = waitForPrompt }: AcquireOptions = {},
+  {
+    fresh = false,
+    integrationArgv = null,
+    wait = waitForPrompt,
+    knownIntegrated = () => false,
+    rememberIntegrated = () => {},
+  }: AcquireOptions = {},
 ): Promise<AcquiredTerminal> {
   const wantIntegration = integrationArgv !== null;
   if (!fresh) {
-    const reusable = await findReusableTerminal(api, threadId, { requireIntegration: wantIntegration });
-    if (reusable !== null) return { terminal: reusable.terminal, created: false, integrated: reusable.integrated };
-  }
-  const terminal = await createRunTerminal(api, threadId, integrationArgv);
-  await wait(api, terminal.id);
-  let integrated = false;
-  if (wantIntegration) {
-    try {
-      integrated = hasIntegrationMarks((await readTail(api, terminal.id)).text);
-    } catch {
-      integrated = false;
+    const reusable = await findReusableTerminal(api, threadId, { requireIntegration: wantIntegration, knownIntegrated });
+    if (reusable !== null) {
+      // An integrated terminal that is still starting: don't type ahead into
+      // its startup files, wait for its prompt like a new one.
+      if (!reusable.ready && reusable.integrated) {
+        await wait(api, reusable.terminal.id, { timeoutMs: INTEGRATED_PROMPT_TIMEOUT_MS });
+      }
+      return { terminal: reusable.terminal, created: false, integrated: reusable.integrated };
     }
   }
-  return { terminal, created: true, integrated };
+  const terminal = await createRunTerminal(api, threadId, integrationArgv);
+  if (wantIntegration) rememberIntegrated(terminal.id);
+  // The integrated launcher goes through `$SHELL -lc`, which runs the login
+  // startup files first; those can take several seconds.
+  await wait(api, terminal.id, wantIntegration ? { timeoutMs: INTEGRATED_PROMPT_TIMEOUT_MS } : {});
+  // Started with the integration argv: integrated, even if its marks haven't
+  // shown yet. The watcher falls back by itself if they never do.
+  return { terminal, created: true, integrated: wantIntegration };
 }
 
 export async function sendCommand(

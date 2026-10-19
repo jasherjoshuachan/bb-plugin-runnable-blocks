@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { fromBase64Utf8, toBase64Utf8 } from "../lib/paste.ts";
 import {
   acquireTerminal,
+  INTEGRATED_PROMPT_TIMEOUT_MS,
   isTerminalsApi,
   RUN_TERMINAL_TITLE,
   reuseCandidates,
@@ -168,12 +169,62 @@ test("with integration: an idle integrated terminal is reused and reported integ
   assert.equal(calls.created.length, 0);
 });
 
-test("a new terminal is integrated only when its prompt shows marks", async () => {
+test("a terminal created with the integration argv counts as integrated and is remembered", async () => {
   const { api } = fakeApi([]);
-  // fakeApi's new terminals print a plain prompt: the shell refused the integration.
-  const got = await acquireTerminal(api, "th", { integrationArgv: ARGV, wait: noWait });
-  assert.equal(got.created, true);
-  assert.equal(got.integrated, false);
+  const remembered: string[] = [];
+  const waits: Array<number | undefined> = [];
+  const got = await acquireTerminal(api, "th", {
+    integrationArgv: ARGV,
+    wait: async (_api, _id, options) => {
+      waits.push(options?.timeoutMs);
+      return true;
+    },
+    rememberIntegrated: (id) => remembered.push(id),
+  });
+  assert.equal(got.integrated, true);
+  assert.deepEqual(remembered, [got.terminal.id]);
+  // A login shell can take seconds to start: the long timeout is used.
+  assert.deepEqual(waits, [INTEGRATED_PROMPT_TIMEOUT_MS]);
+});
+
+test("regression: a still-starting integrated terminal is reused (and waited for), not duplicated", async () => {
+  // No output yet: the shell is still running its login files.
+  const { api, calls } = fakeApi([session({ id: "starting" })], { starting: "" });
+  const waited: string[] = [];
+  const got = await acquireTerminal(api, "th", {
+    integrationArgv: ARGV,
+    knownIntegrated: (id) => id === "starting",
+    wait: async (_api, id) => {
+      waited.push(id);
+      return true;
+    },
+  });
+  assert.equal(got.terminal.id, "starting");
+  assert.equal(got.integrated, true);
+  assert.equal(calls.created.length, 0);
+  assert.deepEqual(waited, ["starting"]);
+  // An idle one with marks is reused without waiting.
+  const idle = fakeApi([session({ id: "idle" })], { idle: INTEGRATED_PROMPT });
+  const noWaits: string[] = [];
+  await acquireTerminal(idle.api, "th", { integrationArgv: ARGV, wait: async (_a, id) => (noWaits.push(id), true) });
+  assert.deepEqual(noWaits, []);
+});
+
+test("waitForPrompt slows its polling after 3 seconds", async () => {
+  const api = fakeApi([]).api;
+  api.output = async () => ({ chunks: [], status: "running", nextSeq: 0, truncated: false });
+  let t = 0;
+  const gaps: number[] = [];
+  await waitForPrompt(api, "t", {
+    timeoutMs: 5000,
+    sleep: async (ms) => {
+      gaps.push(ms);
+      t += ms;
+    },
+    now: () => t,
+  });
+  assert.equal(gaps[0], 150);
+  assert.equal(gaps.at(-1), 400);
 });
 
 test("without integration: v0.1 behavior (shell start, any idle terminal reused)", async () => {

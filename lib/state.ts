@@ -10,6 +10,9 @@ export interface KeyValueStore {
 export const RAN_KEY = "runnable-blocks:ran";
 export const CONFIRMED_THREADS_KEY = "runnable-blocks:confirmed-threads";
 export const ASK_EVERY_RUN_KEY = "runnable-blocks:ask-every-run";
+export const INTEGRATED_TERMINALS_KEY = "runnable-blocks:integrated-terminals";
+/** Most integrated terminal ids remembered. */
+export const INTEGRATED_TERMINALS_CAP = 100;
 
 /** Most "Ran" badges kept; the oldest are dropped first. */
 export const RAN_CAP = 500;
@@ -71,6 +74,15 @@ export function isThreadConfirmed(store: KeyValueStore | null, threadId: string)
 export function setThreadConfirmed(store: KeyValueStore | null, threadId: string, confirmed: boolean): void {
   if (confirmed) addToList(store, CONFIRMED_THREADS_KEY, threadId, CONFIRMED_CAP);
   else removeFromList(store, CONFIRMED_THREADS_KEY, threadId);
+}
+
+/** Terminals this plugin started with shell integration. */
+export function isKnownIntegrated(store: KeyValueStore | null, terminalId: string): boolean {
+  return readList(store, INTEGRATED_TERMINALS_KEY).includes(terminalId);
+}
+
+export function rememberIntegrated(store: KeyValueStore | null, terminalId: string): void {
+  addToList(store, INTEGRATED_TERMINALS_KEY, terminalId, INTEGRATED_TERMINALS_CAP);
 }
 
 export function getAskEveryRun(store: KeyValueStore | null): boolean {

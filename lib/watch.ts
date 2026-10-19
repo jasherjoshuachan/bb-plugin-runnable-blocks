@@ -66,7 +66,9 @@ export async function currentSeq(api: TerminalsApi, terminalId: string): Promise
 export async function watchRun(api: TerminalsApi, record: RunRecord, options: WatchOptions = {}): Promise<RunRecord> {
   const { onUpdate, signal, sleep = defaultSleep, now = Date.now, maxWatchMs = RESUME_WINDOW_MS } = options;
   const parser = new Osc133Parser({
-    mode: record.integrated ? "osc133" : "paste",
+    // OSC 133 when the shell prints marks, else the bracketed-paste fallback.
+    mode: "auto",
+    sawMarks: record.integrated && record.started,
     phase: record.started ? "running" : "idle",
     seedLines: record.preview === "" ? [] : record.preview.split("\n"),
   });
@@ -108,6 +110,7 @@ export async function watchRun(api: TerminalsApi, record: RunRecord, options: Wa
     if (run !== undefined) {
       return update({
         ...current,
+        integrated: parser.hasMarks,
         status: "done",
         exitCode: run.exitCode,
         preview: run.preview,
@@ -138,7 +141,14 @@ export async function watchRun(api: TerminalsApi, record: RunRecord, options: Wa
       (parser.phase === "running") !== current.started
     ) {
       lastPreview = preview;
-      update({ ...current, preview, nextSeq, started: parser.phase === "running", skipped });
+      update({
+        ...current,
+        integrated: current.integrated || parser.hasMarks,
+        preview,
+        nextSeq,
+        started: parser.phase === "running",
+        skipped,
+      });
     }
     await sleep(pollDelay(now() - current.startedAt));
   }

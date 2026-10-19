@@ -20,6 +20,10 @@
 //   line editor turns bracketed paste off (it accepted a line, CSI ?2004l)
 //   and ends when it turns it back on at the next prompt (CSI ?2004h). There
 //   is no exit code.
+// - "auto" (what the watcher uses): "paste" until the first OSC 133 mark
+//   shows up, then "osc133" for good. A terminal started with integration
+//   can still be loading its startup files when the command goes in, and
+//   one whose startup replaced the shell never prints marks at all.
 //
 // Pure and dependency-free so it runs under `node --test`.
 
@@ -34,7 +38,7 @@ const MAX_OSC_CHARS = 512;
 /** Completed runs remembered. */
 const MAX_RUNS = 20;
 
-export type ParserMode = "osc133" | "paste";
+export type ParserMode = "osc133" | "paste" | "auto";
 export type Phase = "idle" | "running";
 
 export interface RunResult {
@@ -49,6 +53,8 @@ export interface ParserOptions {
   /** Resume mid-run: start in "running" with these output lines already seen. */
   phase?: Phase;
   seedLines?: readonly string[];
+  /** Resume: OSC 133 marks were already seen ("auto" mode). */
+  sawMarks?: boolean;
 }
 
 type EscState =
@@ -97,10 +103,13 @@ export class Osc133Parser {
   private lines: string[];
   private line = "";
   private readonly done: RunResult[] = [];
+  /** An OSC 133 mark has been seen (decides "auto" mode). */
+  private sawMarks = false;
   /** Total runs completed, including ones dropped from `runs`. */
   private completedCount = 0;
 
-  constructor({ mode = "osc133", phase = "idle", seedLines = [] }: ParserOptions = {}) {
+  constructor({ mode = "osc133", phase = "idle", seedLines = [], sawMarks = false }: ParserOptions = {}) {
+    this.sawMarks = sawMarks;
     this.mode = mode;
     this.phaseValue = phase;
     this.lines = phase === "running" ? seedLines.slice(-KEEP_LINES) : [];
@@ -113,6 +122,11 @@ export class Osc133Parser {
   /** Completed runs, oldest first. */
   get runs(): readonly RunResult[] {
     return this.done;
+  }
+
+  /** True once an OSC 133 mark has been seen. */
+  get hasMarks(): boolean {
+    return this.sawMarks;
   }
 
   get completed(): number {
@@ -220,7 +234,8 @@ export class Osc133Parser {
   }
 
   private finishCsi(params: string, final: string): void {
-    if (this.mode !== "paste" || params !== "?2004") return;
+    const pasteRules = this.mode === "paste" || (this.mode === "auto" && !this.sawMarks);
+    if (!pasteRules || params !== "?2004") return;
     if (final === "l" && this.phaseValue === "idle") this.begin();
     else if (final === "h" && this.phaseValue === "running") this.end(null);
   }
@@ -254,7 +269,8 @@ export class Osc133Parser {
     const overflow = this.oscOverflow;
     this.oscBuf = "";
     this.oscOverflow = false;
-    if (overflow || this.mode !== "osc133" || !payload.startsWith("133;")) return;
+    if (overflow || this.mode === "paste" || !payload.startsWith("133;")) return;
+    this.sawMarks = true;
     const fields = payload.slice(4).split(";");
     const kind = fields[0];
     if (kind === "C") {
